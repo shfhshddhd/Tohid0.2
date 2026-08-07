@@ -40,6 +40,11 @@ async def connect() -> motor.motor_asyncio.AsyncIOMotorDatabase:
     await _db.target_mappings.create_index(
         [("user_id", 1), ("group_chat_id", 1)]
     )
+    # Per-owner, per-group, per-participant conversation memory for AI mode.
+    await _db.ai_memory.create_index(
+        [("user_id", 1), ("chat_id", 1), ("participant_id", 1)],
+        unique=True,
+    )
     logger.info("Connected to MongoDB.")
     return _db
 
@@ -88,6 +93,66 @@ async def get_setting(user_id: int, key: str, default=None):
 
 async def set_setting(user_id: int, key: str, value) -> None:
     await upsert_user(user_id, {key: value})
+
+
+async def get_ai_memory(
+    user_id: int,
+    chat_id: int,
+    participant_id: int,
+    limit: int = 12,
+) -> list[dict]:
+    """Return recent AI conversation turns for one group participant."""
+    document = await get_db().ai_memory.find_one(
+        {
+            "user_id": user_id,
+            "chat_id": chat_id,
+            "participant_id": participant_id,
+        },
+        {"_id": 0, "messages": 1},
+    )
+    return (document or {}).get("messages", [])[-limit:]
+
+
+async def append_ai_memory(
+    user_id: int,
+    chat_id: int,
+    participant_id: int,
+    user_message: str,
+    assistant_message: str,
+    max_messages: int = 20,
+) -> None:
+    """Persist a bounded pair of user/assistant turns for future replies."""
+    now = datetime.now(timezone.utc)
+    await get_db().ai_memory.update_one(
+        {
+            "user_id": user_id,
+            "chat_id": chat_id,
+            "participant_id": participant_id,
+        },
+        {
+            "$set": {"updated_at": now},
+            "$setOnInsert": {
+                "user_id": user_id,
+                "chat_id": chat_id,
+                "participant_id": participant_id,
+                "created_at": now,
+            },
+            "$push": {
+                "messages": {
+                    "$each": [
+                        {"role": "user", "content": user_message, "created_at": now},
+                        {
+                            "role": "assistant",
+                            "content": assistant_message,
+                            "created_at": now,
+                        },
+                    ],
+                    "$slice": -max_messages,
+                }
+            },
+        },
+        upsert=True,
+    )
 
 
 # ── Permanent group-to-target mappings ─────────────────────────────────────────

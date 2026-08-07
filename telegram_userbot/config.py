@@ -7,6 +7,7 @@ BOT_TOKEN: str = os.environ.get("BOT_TOKEN", "")
 API_ID: int = int(os.environ.get("TELEGRAM_API_ID", "0"))
 API_HASH: str = os.environ.get("TELEGRAM_API_HASH", "")
 MONGO_URI: str = os.environ.get("MONGO_URI", "")
+OPENAI_API_KEY: str = os.environ.get("OPENAI_API_KEY", "")
 
 def validate():
     missing = []

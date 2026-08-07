@@ -1,0 +1,1 @@
+- [AI mode isolation](ai-mode-isolation.md) — AI mention replies use separate state and bounded, scoped conversation memory from the Saved Messages bridge.

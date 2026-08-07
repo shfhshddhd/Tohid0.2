@@ -25,6 +25,8 @@ This bot lets you host your own Telegram account as a userbot, copy mapped targe
 <b>⚙️ Bot Controls</b>
 /boton — Enable monitoring and Saved Messages bridging
 /botoff — Disable monitoring without deleting mappings
+/aimodeon — Enable delayed AI replies to group mentions
+/aimodeoff — Disable AI replies without deleting memory
 
 <b>ℹ️ General</b>
 /start — Show this welcome message

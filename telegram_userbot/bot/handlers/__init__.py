@@ -8,6 +8,7 @@ from bot.handlers.target import (
     targetremoveall_command,
 )
 from bot.handlers.bot_toggle import boton_command, botoff_command
+from bot.handlers.ai_mode import aimodeon_command, aimodeoff_command
 
 
 def register_all(app: Application, manager) -> None:
@@ -22,3 +23,5 @@ def register_all(app: Application, manager) -> None:
     app.add_handler(CommandHandler("targetremoveall", targetremoveall_command))
     app.add_handler(CommandHandler("boton", boton_command))
     app.add_handler(CommandHandler("botoff", botoff_command))
+    app.add_handler(CommandHandler("aimodeon", aimodeon_command))
+    app.add_handler(CommandHandler("aimodeoff", aimodeoff_command))
