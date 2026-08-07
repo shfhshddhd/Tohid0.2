@@ -64,7 +64,8 @@ async def host_phone(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     _pending[user_id] = {"client": client, "phone": phone, "phone_code_hash": phone_code_hash}
     await update.message.reply_text(
         "✉️ A verification code has been sent to your Telegram account.\n"
-        "Please enter the code (digits only, e.g. 12345):"
+        "Please enter your OTP with spaces between each digit.\n"
+        "Example: 1 2 3 4 5."
     )
     return OTP
 
