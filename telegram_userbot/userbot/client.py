@@ -6,13 +6,14 @@ import unicodedata
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from telethon.errors import FloodWaitError
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, RateLimitError
 import config
 import database.mongo as db
 
 logger = logging.getLogger(__name__)
 
 FLOOD_RETRY_LIMIT = 5
+AI_MODELS = ("gpt-5-mini", "gpt-5-nano")
 
 
 class UserbotClient:
@@ -144,7 +145,14 @@ class UserbotClient:
     async def _is_ai_mention(self, event: events.NewMessage.Event) -> bool:
         if not self._running or not event.message or not event.is_group:
             return False
-        if not getattr(event.message, "mentioned", False):
+        has_mention = bool(getattr(event.message, "mentioned", False))
+        if not has_mention:
+            has_mention = any(
+                type(entity).__name__
+                in {"MessageEntityMention", "MessageEntityMentionName"}
+                for entity in (getattr(event.message, "entities", None) or [])
+            )
+        if not has_mention:
             return False
         sender = await event.get_sender()
         if sender is None or getattr(sender, "bot", False):
@@ -242,18 +250,38 @@ class UserbotClient:
             }
         )
 
-        try:
-            completion = await self._ai_client.chat.completions.create(
-                model="gpt-5.4-mini",
-                max_completion_tokens=240,
-                messages=prompt_messages,
-            )
-        except Exception:
-            logger.exception("AI response generation failed for user %s", self.user_id)
-            return ""
+        for model in AI_MODELS:
+            try:
+                completion = await self._ai_client.chat.completions.create(
+                    model=model,
+                    max_completion_tokens=240,
+                    messages=prompt_messages,
+                )
+                content = (
+                    completion.choices[0].message.content
+                    if completion.choices
+                    else ""
+                )
+                return self._sanitize_ai_reply(content or "")
+            except RateLimitError:
+                logger.warning(
+                    "AI model rate limited for user %s; trying fallback model=%s",
+                    self.user_id,
+                    model,
+                )
+            except Exception:
+                logger.exception(
+                    "AI response generation failed for user %s model=%s",
+                    self.user_id,
+                    model,
+                )
+                return ""
 
-        content = completion.choices[0].message.content if completion.choices else ""
-        return self._sanitize_ai_reply(content or "")
+        logger.error(
+            "AI response unavailable for user %s: all configured models are rate limited",
+            self.user_id,
+        )
+        return ""
 
     @staticmethod
     def _sender_name(sender) -> str:
