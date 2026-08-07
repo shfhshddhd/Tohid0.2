@@ -191,6 +191,12 @@ async def remove_target_mapping(
     return result.deleted_count > 0
 
 
+async def remove_all_target_mappings(user_id: int) -> int:
+    """Remove every permanent group-to-target mapping for one bot user."""
+    result = await get_db().target_mappings.delete_many({"user_id": user_id})
+    return int(result.deleted_count)
+
+
 async def get_latest_mapped_target_message(
     user_id: int,
 ) -> tuple[dict, int] | None:

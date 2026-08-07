@@ -37,7 +37,10 @@ class UserbotClient:
         me = await self.client.get_me()
         self._own_id = me.id
         self._running = True
-        if await db.get_target_mappings(self.user_id):
+        if (
+            await db.get_setting(self.user_id, "bot_enabled", True)
+            and await db.get_target_mappings(self.user_id)
+        ):
             await self.enable_monitoring()
         logger.info("Userbot started for user %s (own_id=%s).", self.user_id, self._own_id)
 
@@ -58,6 +61,9 @@ class UserbotClient:
 
     async def enable_monitoring(self) -> None:
         """Register bridge handlers while at least one mapping exists."""
+        if not await db.get_setting(self.user_id, "bot_enabled", True):
+            logger.info("Monitoring remains disabled for user %s.", self.user_id)
+            return
         if self._monitoring_enabled:
             return
         self._monitoring_enabled = True

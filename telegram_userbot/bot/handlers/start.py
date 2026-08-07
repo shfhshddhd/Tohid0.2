@@ -19,6 +19,12 @@ This bot lets you host your own Telegram account as a userbot, copy mapped targe
 <b>🎯 Target Management</b>
 /targetadd &lt;group_chat_id&gt; &lt;@username_or_user_id&gt; — Map a target to a group
 /targetremove &lt;group_chat_id&gt; &lt;@username_or_user_id&gt; — Remove a mapping
+/targetlist — Show all saved group-to-target mappings
+/targetremoveall — Remove all mappings after confirmation
+
+<b>⚙️ Bot Controls</b>
+/boton — Enable monitoring and Saved Messages bridging
+/botoff — Disable monitoring without deleting mappings
 
 <b>ℹ️ General</b>
 /start — Show this welcome message

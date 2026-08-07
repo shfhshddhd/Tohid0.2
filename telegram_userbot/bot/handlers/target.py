@@ -1,10 +1,12 @@
 """Permanent group-to-target mapping commands."""
+from html import escape
 import logging
 from telegram import Update
 from telegram.ext import ContextTypes
 import database.mongo as db
 
 logger = logging.getLogger(__name__)
+_pending_removeall: set[int] = set()
 
 async def _resolve_group(client, chat_id: int):
     entity = await client.get_entity(chat_id)
@@ -75,7 +77,8 @@ async def targetadd_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> N
         target=target,
         group_title=getattr(group, "title", None) or str(group_chat_id),
     )
-    await userbot.enable_monitoring()
+    if await db.get_setting(user_id, "bot_enabled", True):
+        await userbot.enable_monitoring()
     action = "created" if created else "updated"
     await update.message.reply_text(
         f"✅ Mapping {action}.\n\n"
@@ -135,3 +138,71 @@ async def targetremove_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -
         )
     else:
         await update.message.reply_text("❌ The target mapping was already removed.")
+
+
+async def targetlist_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """List all permanent group-to-target mappings for the caller."""
+    user_id = update.effective_user.id
+    mappings = await db.get_target_mappings(user_id)
+    if not mappings:
+        await update.message.reply_text("📋 No target mappings are configured.")
+        return
+
+    lines = ["📋 <b>Your target mappings:</b>\n"]
+    for index, mapping in enumerate(
+        sorted(
+            mappings,
+            key=lambda item: (
+                str(item.get("group_title") or ""),
+                int(item.get("group_chat_id", 0)),
+                str(item.get("target_name") or ""),
+            ),
+        ),
+        1,
+    ):
+        group_title = escape(str(mapping.get("group_title") or "Unknown group"))
+        group_id = escape(str(mapping.get("group_chat_id", "—")))
+        target_name = escape(str(mapping.get("target_name") or "Unknown user"))
+        target_username = mapping.get("target_username") or ""
+        username_text = f"@{escape(target_username)}" if target_username else "—"
+        target_id = escape(str(mapping.get("target_user_id", "—")))
+        lines.append(
+            f"{index}. <b>{group_title}</b> "
+            f"(<code>{group_id}</code>)\n"
+            f"   ↳ <b>{target_name}</b> {username_text} "
+            f"(<code>{target_id}</code>)"
+        )
+    await update.message.reply_html("\n".join(lines))
+
+
+async def targetremoveall_command(
+    update: Update, ctx: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Remove all permanent mappings after an explicit second confirmation."""
+    user_id = update.effective_user.id
+    mappings = await db.get_target_mappings(user_id)
+    if not mappings:
+        _pending_removeall.discard(user_id)
+        await update.message.reply_text("📋 Your target mapping list is already empty.")
+        return
+
+    if user_id not in _pending_removeall:
+        _pending_removeall.add(user_id)
+        await update.message.reply_text(
+            f"⚠️ This will remove all <b>{len(mappings)}</b> target mapping(s).\n"
+            "Send /targetremoveall again to confirm, or use another command to cancel.",
+            parse_mode="HTML",
+        )
+        return
+
+    _pending_removeall.discard(user_id)
+    removed_count = await db.remove_all_target_mappings(user_id)
+    userbot = ctx.bot_data["manager"].get_client(user_id)
+    if userbot is not None:
+        await userbot.disable_monitoring()
+    else:
+        await db.clear_monitoring_data(user_id)
+    await update.message.reply_text(
+        f"🗑️ Removed <b>{removed_count}</b> target mapping(s) and cleared monitoring data.",
+        parse_mode="HTML",
+    )

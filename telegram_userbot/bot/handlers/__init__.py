@@ -1,7 +1,13 @@
 from telegram.ext import Application, CommandHandler
 from bot.handlers.start import start_command, allcommands_command
 from bot.handlers.host import build_host_handler, unhost_command
-from bot.handlers.target import targetadd_command, targetremove_command
+from bot.handlers.target import (
+    targetadd_command,
+    targetremove_command,
+    targetlist_command,
+    targetremoveall_command,
+)
+from bot.handlers.bot_toggle import boton_command, botoff_command
 
 
 def register_all(app: Application, manager) -> None:
@@ -12,3 +18,7 @@ def register_all(app: Application, manager) -> None:
     app.add_handler(CommandHandler("unhost", unhost_command))
     app.add_handler(CommandHandler("targetadd", targetadd_command))
     app.add_handler(CommandHandler("targetremove", targetremove_command))
+    app.add_handler(CommandHandler("targetlist", targetlist_command))
+    app.add_handler(CommandHandler("targetremoveall", targetremoveall_command))
+    app.add_handler(CommandHandler("boton", boton_command))
+    app.add_handler(CommandHandler("botoff", botoff_command))
