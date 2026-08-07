@@ -1,1 +1,2 @@
 - [AI mode isolation](ai-mode-isolation.md) — AI mention replies use separate state and bounded, scoped conversation memory from the Saved Messages bridge.
+- [AI credential verification](ai-credential-verification.md) — AI mode can load while the provider key is rejected; verify with a real mention after restart.
