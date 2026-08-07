@@ -210,6 +210,16 @@ class UserbotClient:
         sender_name: str,
         message_text: str,
     ) -> str:
+        """Try the configured providers in priority order."""
+        if config.OPENAI_API_KEY:
+            reply = await self._generate_openai_reply(
+                chat_id=chat_id,
+                participant_id=participant_id,
+                sender_name=sender_name,
+                message_text=message_text,
+            )
+            if reply:
+                return reply
         if config.GEMINI_API_KEY:
             return await self._generate_gemini_reply(
                 chat_id=chat_id,
@@ -217,12 +227,19 @@ class UserbotClient:
                 sender_name=sender_name,
                 message_text=message_text,
             )
-        if not config.OPENAI_API_KEY:
-            logger.error(
-                "AI mode cannot reply: neither GEMINI_API_KEY nor "
-                "OPENAI_API_KEY is configured."
-            )
-            return ""
+        logger.error(
+            "AI mode cannot reply: neither GEMINI_API_KEY nor "
+            "OPENAI_API_KEY is configured."
+        )
+        return ""
+
+    async def _generate_openai_reply(
+        self,
+        chat_id: int,
+        participant_id: int,
+        sender_name: str,
+        message_text: str,
+    ) -> str:
         if self._ai_client is None:
             self._ai_client = AsyncOpenAI(api_key=config.OPENAI_API_KEY)
 
