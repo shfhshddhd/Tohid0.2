@@ -77,15 +77,25 @@ async def targetadd_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> N
         target=target,
         group_title=getattr(group, "title", None) or str(group_chat_id),
     )
-    if await db.get_setting(user_id, "bot_enabled", True):
+    bot_enabled = await db.get_setting(user_id, "bot_enabled", True)
+    if bot_enabled:
         await userbot.enable_monitoring()
     action = "created" if created else "updated"
+    status_text = (
+        "🟢 <b>Aapka bot abhi ON hai.</b>\n"
+        "Target monitoring active hai."
+        if bot_enabled
+        else "🔴 <b>Aapka bot abhi OFF hai.</b>\n"
+        "Mapping save ho gayi hai, lekin monitoring band hai.\n"
+        "Monitoring shuru karne ke liye /boton bhejein."
+    )
     await update.message.reply_text(
         f"✅ Mapping {action}.\n\n"
         f"Group: <b>{getattr(group, 'title', None) or group_chat_id}</b>\n"
         f"Group ID: <code>{group_chat_id}</code>\n"
         f"Target: <b>{target['name']}</b>\n"
         f"Target ID: <code>{target['target_id']}</code>\n\n"
+        f"{status_text}\n\n"
         "Messages from this target in this group will be copied to Saved Messages.",
         parse_mode="HTML",
     )
