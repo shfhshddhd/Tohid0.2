@@ -90,8 +90,7 @@ async def host_otp(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
         _pending.pop(user_id, None)
         await update.message.reply_text(
             "🎉 Your account has been hosted successfully!\n\n"
-            "Use /target add <username or user_id> to add targets.\n"
-            "Use /autotag on to enable automatic replies."
+            "Use /targetadd <group_chat_id> <@username_or_user_id> to create a mapping."
         )
         return ConversationHandler.END
 
@@ -133,8 +132,7 @@ async def host_password(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
         _pending.pop(user_id, None)
         await update.message.reply_text(
             "🎉 Your account has been hosted successfully!\n\n"
-            "Use /target add <username or user_id> to add targets.\n"
-            "Use /autotag on to enable automatic replies."
+            "Use /targetadd <group_chat_id> <@username_or_user_id> to create a mapping."
         )
     except Exception as exc:
         logger.exception("2FA error for %s: %s", user_id, exc)

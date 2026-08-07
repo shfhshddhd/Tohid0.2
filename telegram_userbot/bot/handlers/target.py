@@ -1,6 +1,4 @@
-"""
-/target <add|remove|list|removeall> command handler.
-"""
+"""Permanent group-to-target mapping commands."""
 import logging
 from telegram import Update
 from telegram.ext import ContextTypes
@@ -8,159 +6,132 @@ import database.mongo as db
 
 logger = logging.getLogger(__name__)
 
-# Awaiting confirmation for removeall
-_pending_removeall: set[int] = set()
+async def _resolve_group(client, chat_id: int):
+    entity = await client.get_entity(chat_id)
+    if getattr(entity, "broadcast", False) or not getattr(entity, "title", None):
+        raise ValueError("The chat ID does not belong to a group.")
+    return entity
 
 
-async def target_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+def _parse_args(args: list[str]) -> tuple[int, str] | None:
+    if len(args) != 2:
+        return None
+    try:
+        group_chat_id = int(args[0])
+    except ValueError:
+        return None
+    if not args[1].strip():
+        return None
+    return group_chat_id, args[1].strip()
+
+
+async def targetadd_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     manager = ctx.bot_data["manager"]
-    args = ctx.args or []
-
-    if not args:
+    parsed = _parse_args(ctx.args or [])
+    if parsed is None:
         await update.message.reply_text(
-            "ℹ️ Usage:\n"
-            "/target add <username or user_id>\n"
-            "/target remove <username or user_id>\n"
-            "/target list\n"
-            "/target removeall"
+            "Usage: /targetadd <group_chat_id> <@username_or_user_id>\n"
+            "Example: /targetadd -1001234567890 @username"
+        )
+        return
+    if not manager.is_hosted(user_id):
+        await update.message.reply_text(
+            "⚠️ You need a hosted account first. Use /host to set one up."
         )
         return
 
-    sub = args[0].lower()
-
-    # ── list ──────────────────────────────────────────────────────────────────
-    if sub == "list":
-        targets = await db.get_targets(user_id)
-        if not targets:
-            await update.message.reply_text("📋 Your target list is empty.")
-            return
-        lines = ["📋 <b>Your targets:</b>\n"]
-        for i, t in enumerate(targets, 1):
-            name = t.get("name") or "Unknown"
-            username = f"@{t['username']}" if t.get("username") else "—"
-            tid = t.get("target_id", "—")
-            lines.append(f"{i}. <b>{name}</b>  {username}  (<code>{tid}</code>)")
-        await update.message.reply_html("\n".join(lines))
-        return
-
-    # ── add ───────────────────────────────────────────────────────────────────
-    if sub == "add":
-        if len(args) < 2:
-            await update.message.reply_text("Usage: /target add <username or user_id>")
-            return
-
-        if not manager.is_hosted(user_id):
-            await update.message.reply_text(
-                "⚠️ You need a hosted account first. Use /host to set one up."
-            )
-            return
-
-        identifier = args[1]
-        await update.message.reply_text(f"🔍 Resolving {identifier}…")
-        target = await manager.resolve_target(user_id, identifier)
-        if target is None:
-            await update.message.reply_text(
-                f"❌ Could not find user '{identifier}'.\n"
-                "Make sure the username is correct or they share a group with your hosted account."
-            )
-            return
-
-        added = await db.add_target(user_id, target)
-        if not added:
-            await update.message.reply_text(
-                f"⚠️ {target['name']} is already in your target list."
-            )
-            return
-
-        name = target["name"]
-        username = f"@{target['username']}" if target.get("username") else ""
-        tid = target["target_id"]
+    group_chat_id, identifier = parsed
+    userbot = manager.get_client(user_id)
+    try:
+        group = await _resolve_group(userbot.client, group_chat_id)
+    except Exception as exc:
+        logger.warning(
+            "Target mapping group validation failed: user_id=%s group_chat_id=%s reason=%s",
+            user_id,
+            group_chat_id,
+            exc,
+        )
         await update.message.reply_text(
-            f"✅ Added target:\n"
-            f"Name: <b>{name}</b>\n"
-            f"Username: {username or '—'}\n"
-            f"User ID: <code>{tid}</code>",
+            f"❌ Could not validate group <code>{group_chat_id}</code>.\n"
+            "Make sure the hosted account is a member of that group.",
             parse_mode="HTML",
         )
         return
 
-    # ── remove ────────────────────────────────────────────────────────────────
-    if sub == "remove":
-        if len(args) < 2:
-            await update.message.reply_text("Usage: /target remove <username or user_id>")
-            return
-        identifier = args[1]
-        stored_target_id: int | None = None
-        for target in await db.get_targets(user_id):
-            if (
-                str(target.get("target_id")) == identifier.lstrip("@")
-                or (target.get("username") or "").lower() == identifier.lstrip("@").lower()
-            ):
-                stored_target_id = target.get("target_id")
-                break
-
-        resolved_target_id = stored_target_id
-        if resolved_target_id is None and manager.is_hosted(user_id):
-            resolved = await manager.resolve_target(user_id, identifier)
-            if resolved is not None:
-                resolved_target_id = resolved["target_id"]
-
-        removed = await db.remove_target(
-            user_id,
-            identifier,
-            resolved_target_id=resolved_target_id,
+    await update.message.reply_text(f"🔍 Validating target {identifier}…")
+    target = await manager.resolve_target(user_id, identifier)
+    if target is None:
+        await update.message.reply_text(
+            f"❌ Could not validate user <code>{identifier}</code>.\n"
+            "Use a valid @username or Telegram user ID visible to the hosted account.",
+            parse_mode="HTML",
         )
-        if removed:
-            uc = manager.get_client(user_id)
-            # Removing a target ends the current monitoring generation
-            # completely. This prevents any old listener, bridge mapping,
-            # cache, AutoTag state, or active group from being revived when a
-            # target is added again later.
-            await db.set_setting(user_id, "autotag", False)
-            await db.clear_active_group(user_id)
-            if uc is not None:
-                await uc.disable_monitoring()
-            else:
-                await db.clear_monitoring_data(
-                    user_id,
-                    target_id=None,
-                )
-            await update.message.reply_text(f"🗑️ Removed '{identifier}' from your target list.")
-        else:
-            await update.message.reply_text(
-                f"❌ '{identifier}' was not found in your target list."
-            )
         return
 
-    # ── removeall ─────────────────────────────────────────────────────────────
-    if sub == "removeall":
-        targets = await db.get_targets(user_id)
-        if not targets:
-            await update.message.reply_text("📋 Your target list is already empty.")
-            return
-
-        if user_id not in _pending_removeall:
-            _pending_removeall.add(user_id)
-            count = len(targets)
-            await update.message.reply_text(
-                f"⚠️ This will remove all <b>{count}</b> target(s).\n"
-                "Send /target removeall again to confirm, or any other command to cancel.",
-                parse_mode="HTML",
-            )
-            return
-
-        # Confirmed
-        _pending_removeall.discard(user_id)
-        await db.clear_targets(user_id)
-        uc = manager.get_client(user_id)
-        if uc is not None:
-            await uc.disable_monitoring()
-        await update.message.reply_text("🗑️ All targets have been removed.")
-        return
-
-    # Cancel pending removeall on any other subcommand
-    _pending_removeall.discard(user_id)
-    await update.message.reply_text(
-        f"❓ Unknown subcommand '{sub}'.\nValid: add, remove, list, removeall"
+    created = await db.upsert_target_mapping(
+        user_id=user_id,
+        group_chat_id=group_chat_id,
+        target=target,
+        group_title=getattr(group, "title", None) or str(group_chat_id),
     )
+    await userbot.enable_monitoring()
+    action = "created" if created else "updated"
+    await update.message.reply_text(
+        f"✅ Mapping {action}.\n\n"
+        f"Group: <b>{getattr(group, 'title', None) or group_chat_id}</b>\n"
+        f"Group ID: <code>{group_chat_id}</code>\n"
+        f"Target: <b>{target['name']}</b>\n"
+        f"Target ID: <code>{target['target_id']}</code>\n\n"
+        "Messages from this target in this group will be copied to Saved Messages.",
+        parse_mode="HTML",
+    )
+
+
+async def targetremove_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    manager = ctx.bot_data["manager"]
+    parsed = _parse_args(ctx.args or [])
+    if parsed is None:
+        await update.message.reply_text(
+            "Usage: /targetremove <group_chat_id> <@username_or_user_id>\n"
+            "Example: /targetremove -1001234567890 @username"
+        )
+        return
+    if not manager.is_hosted(user_id):
+        await update.message.reply_text(
+            "⚠️ You need a hosted account first. Use /host to set one up."
+        )
+        return
+
+    group_chat_id, identifier = parsed
+    mapping = await db.get_target_mapping_by_identifier(
+        user_id, group_chat_id, identifier
+    )
+    if mapping is None:
+        resolved = await manager.resolve_target(user_id, identifier)
+        if resolved is not None:
+            mapping = await db.get_target_mapping(
+                user_id, group_chat_id, int(resolved["target_id"])
+            )
+    if mapping is None:
+        await update.message.reply_text(
+            "❌ No matching target mapping was found for that group."
+        )
+        return
+
+    target_id = int(mapping["target_user_id"])
+    removed = await db.remove_target_mapping(user_id, group_chat_id, target_id)
+    userbot = manager.get_client(user_id)
+    if userbot is not None:
+        await userbot.clear_target_monitoring(target_id, group_chat_id)
+        if not await db.get_target_mappings(user_id):
+            await userbot.disable_monitoring()
+    if removed:
+        await update.message.reply_text(
+            f"🗑️ Removed target <code>{target_id}</code> from group "
+            f"<code>{group_chat_id}</code>.",
+            parse_mode="HTML",
+        )
+    else:
+        await update.message.reply_text("❌ The target mapping was already removed.")

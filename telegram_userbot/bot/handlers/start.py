@@ -6,7 +6,7 @@ from telegram.ext import ContextTypes
 
 MENU_TEXT = """👋 <b>Welcome to the Multi-User Telegram Userbot Manager!</b>
 
-This bot lets you host your own Telegram account as a userbot and automatically reply to target users in groups.
+This bot lets you host your own Telegram account as a userbot, copy mapped target messages to Saved Messages, and bridge replies back into groups.
 
 ━━━━━━━━━━━━━━━━━━━━━━
 📋 <b>ALL AVAILABLE COMMANDS</b>
@@ -17,19 +17,8 @@ This bot lets you host your own Telegram account as a userbot and automatically 
 /unhost — Remove your hosted account and stop the userbot
 
 <b>🎯 Target Management</b>
-/target add &lt;username or user_id&gt; — Add a user to your target list
-/target remove &lt;username or user_id&gt; — Remove a user from your target list
-/target list — View all your saved targets (name, username, user ID)
-/target removeall — Delete all targets (asks for confirmation)
-
-<b>⚡ AutoTag</b>
-/autotag on — Enable automatic replies to all targets
-/autotag off — Disable automatic replies
-
-<b>📌 SetGroup</b>
-/setgroup &lt;chat_id&gt; — Set one specific group for focused auto-reply
-↳ Target messages in that group are copied to Saved Messages
-↳ Reply in Saved Messages → reply is sent to the group automatically
+/targetadd &lt;group_chat_id&gt; &lt;@username_or_user_id&gt; — Map a target to a group
+/targetremove &lt;group_chat_id&gt; &lt;@username_or_user_id&gt; — Remove a mapping
 
 <b>ℹ️ General</b>
 /start — Show this welcome message
@@ -37,8 +26,8 @@ This bot lets you host your own Telegram account as a userbot and automatically 
 /cancel — Cancel any in-progress operation
 
 ━━━━━━━━━━━━━━━━━━━━━━
-<b>💡 How AutoTag works:</b>
-When enabled, every text message you send in a group is automatically sent as a reply to each target user's latest message in that same group. Your original message is deleted — only the reply remains.
+<b>💡 How the bridge works:</b>
+When a mapped target sends a message in its group, it is copied to Saved Messages. Send a message in Saved Messages to reply to that target's latest mapped group message.
 ━━━━━━━━━━━━━━━━━━━━━━"""
 
 

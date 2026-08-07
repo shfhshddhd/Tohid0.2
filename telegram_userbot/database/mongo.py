@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime, timezone
 import motor.motor_asyncio
 from config import MONGO_URI
 
@@ -29,6 +30,15 @@ async def connect() -> motor.motor_asyncio.AsyncIOMotorDatabase:
     )
     await _db.setgroup_map.create_index(
         [("user_id", 1), ("forwarded_saved_message_id", 1)]
+    )
+    # Permanent group-to-target configuration. One target can be mapped once
+    # per group for each bot user; re-adding it updates this record.
+    await _db.target_mappings.create_index(
+        [("user_id", 1), ("group_chat_id", 1), ("target_user_id", 1)],
+        unique=True,
+    )
+    await _db.target_mappings.create_index(
+        [("user_id", 1), ("group_chat_id", 1)]
     )
     logger.info("Connected to MongoDB.")
     return _db
@@ -80,7 +90,141 @@ async def set_setting(user_id: int, key: str, value) -> None:
     await upsert_user(user_id, {key: value})
 
 
-# ── Targets ────────────────────────────────────────────────────────────────────
+# ── Permanent group-to-target mappings ─────────────────────────────────────────
+
+async def get_target_mappings(
+    user_id: int,
+    group_chat_id: int | None = None,
+    target_user_id: int | None = None,
+) -> list[dict]:
+    query: dict = {"user_id": user_id}
+    if group_chat_id is not None:
+        query["group_chat_id"] = group_chat_id
+    if target_user_id is not None:
+        query["target_user_id"] = target_user_id
+    cursor = get_db().target_mappings.find(query, {"_id": 0})
+    return await cursor.to_list(length=None)
+
+
+async def get_target_mapping(
+    user_id: int,
+    group_chat_id: int,
+    target_user_id: int,
+) -> dict | None:
+    return await get_db().target_mappings.find_one(
+        {
+            "user_id": user_id,
+            "group_chat_id": group_chat_id,
+            "target_user_id": target_user_id,
+        },
+        {"_id": 0},
+    )
+
+
+async def get_target_mapping_by_identifier(
+    user_id: int,
+    group_chat_id: int,
+    identifier: str,
+) -> dict | None:
+    normalized = identifier.strip().lstrip("@").lower()
+    query: dict = {
+        "user_id": user_id,
+        "group_chat_id": group_chat_id,
+    }
+    if normalized.lstrip("-").isdigit():
+        query["target_user_id"] = int(normalized)
+    else:
+        query["target_username"] = normalized
+    return await get_db().target_mappings.find_one(query, {"_id": 0})
+
+
+async def upsert_target_mapping(
+    user_id: int,
+    group_chat_id: int,
+    target: dict,
+    group_title: str,
+) -> bool:
+    """Create or update one permanent group-to-target mapping.
+
+    Returns True when a new mapping was created and False when an existing
+    mapping was updated.
+    """
+    target_user_id = int(target["target_id"])
+    existing = await get_target_mapping(user_id, group_chat_id, target_user_id)
+    await get_db().target_mappings.update_one(
+        {
+            "user_id": user_id,
+            "group_chat_id": group_chat_id,
+            "target_user_id": target_user_id,
+        },
+        {
+            "$set": {
+                "target_username": (target.get("username") or "").lower(),
+                "target_name": target.get("name") or str(target_user_id),
+                "group_title": group_title,
+                "updated_at": datetime.now(timezone.utc),
+            },
+            "$setOnInsert": {
+                "user_id": user_id,
+                "group_chat_id": group_chat_id,
+                "target_user_id": target_user_id,
+                "created_at": datetime.now(timezone.utc),
+            },
+        },
+        upsert=True,
+    )
+    return existing is None
+
+
+async def remove_target_mapping(
+    user_id: int,
+    group_chat_id: int,
+    target_user_id: int,
+) -> bool:
+    result = await get_db().target_mappings.delete_one(
+        {
+            "user_id": user_id,
+            "group_chat_id": group_chat_id,
+            "target_user_id": target_user_id,
+        }
+    )
+    return result.deleted_count > 0
+
+
+async def get_latest_mapped_target_message(
+    user_id: int,
+) -> tuple[dict, int] | None:
+    """Return the newest tracked message across all permanent mappings."""
+    mappings = await get_target_mappings(user_id)
+    if not mappings:
+        return None
+    pair_filters = [
+        {
+            "target_id": int(mapping["target_user_id"]),
+            "chat_id": int(mapping["group_chat_id"]),
+        }
+        for mapping in mappings
+    ]
+    doc = await get_db().group_messages.find_one(
+        {"user_id": user_id, "$or": pair_filters},
+        {"_id": 0},
+        sort=[("updated_at", -1), ("message_id", -1)],
+    )
+    if not doc or doc.get("message_id") is None:
+        return None
+    mapping = next(
+        (
+            item
+            for item in mappings
+            if int(item["target_user_id"]) == int(doc["target_id"])
+            and int(item["group_chat_id"]) == int(doc["chat_id"])
+        ),
+        None,
+    )
+    return (mapping, int(doc["message_id"])) if mapping else None
+
+
+# ── Legacy target records retained for safe database compatibility ─────────────
 
 async def get_targets(user_id: int) -> list[dict]:
     user = await get_user(user_id)
@@ -149,7 +293,11 @@ async def get_target(user_id: int, target_id: int) -> dict | None:
 
 
 async def update_target_last_message(
-    user_id: int, target_id: int, chat_id: int, message_id: int
+    user_id: int,
+    target_id: int,
+    chat_id: int,
+    message_id: int,
+    message_date: datetime | None = None,
 ) -> None:
     """
     Store the latest message from a target user in a specific group.
@@ -157,7 +305,12 @@ async def update_target_last_message(
     """
     await get_db().group_messages.update_one(
         {"user_id": user_id, "target_id": target_id, "chat_id": chat_id},
-        {"$set": {"message_id": message_id}},
+        {
+            "$set": {
+                "message_id": message_id,
+                "updated_at": message_date or datetime.now(timezone.utc),
+            }
+        },
         upsert=True,
     )
 

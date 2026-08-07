@@ -9,6 +9,7 @@ from telethon.errors import SessionPasswordNeededError
 import config
 import database.mongo as db
 from userbot.client import UserbotClient
+from telethon.tl.types import User
 
 logger = logging.getLogger(__name__)
 
@@ -130,6 +131,8 @@ class UserbotManager:
                 entity = await self._find_numeric_target(uc.client, entity_ref)
                 if entity is None:
                     raise
+            if not isinstance(entity, User):
+                raise ValueError("The target identifier does not belong to a user.")
             name = " ".join(
                 filter(None, [getattr(entity, "first_name", None), getattr(entity, "last_name", None)])
             ).strip() or str(entity.id)

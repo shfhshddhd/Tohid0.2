@@ -1,11 +1,9 @@
-"""
-Per-user Telethon userbot client with autotag and flood-wait handling.
-"""
+"""Per-user Telethon client for persistent group-to-target message bridges."""
 import asyncio
 import logging
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
-from telethon.errors import FloodWaitError, SessionPasswordNeededError
+from telethon.errors import FloodWaitError
 import config
 import database.mongo as db
 
@@ -28,7 +26,6 @@ class UserbotClient:
         self._monitoring_enabled = False
         self._event_handlers: list[tuple[object, object]] = []
         self._bridge_mappings: dict[int, dict] = {}
-        self._saved_message_outgoing_markers: set[tuple[int, str]] = set()
 
     # ── Lifecycle ──────────────────────────────────────────────────────────────
 
@@ -40,10 +37,8 @@ class UserbotClient:
         me = await self.client.get_me()
         self._own_id = me.id
         self._running = True
-        if await db.get_setting(self.user_id, "autotag", False):
+        if await db.get_target_mappings(self.user_id):
             await self.enable_monitoring()
-        else:
-            await self._clear_monitoring_data()
         logger.info("Userbot started for user %s (own_id=%s).", self.user_id, self._own_id)
 
     async def stop(self) -> None:
@@ -62,7 +57,7 @@ class UserbotClient:
     # ── Event handlers ─────────────────────────────────────────────────────────
 
     async def enable_monitoring(self) -> None:
-        """Register monitoring handlers only while AutoTag is enabled."""
+        """Register bridge handlers while at least one mapping exists."""
         if self._monitoring_enabled:
             return
         self._monitoring_enabled = True
@@ -77,9 +72,16 @@ class UserbotClient:
         await self._clear_monitoring_data()
         logger.info("Monitoring disabled and cleared for user %s.", self.user_id)
 
-    async def clear_target_monitoring(self, target_id: int) -> None:
-        """Clear all monitoring state belonging to one target."""
-        await self._clear_monitoring_data(target_id=target_id)
+    async def clear_target_monitoring(
+        self,
+        target_id: int,
+        group_chat_id: int | None = None,
+    ) -> None:
+        """Clear bridge state for one target, optionally within one group."""
+        await self._clear_monitoring_data(
+            target_id=target_id,
+            group_chat_id=group_chat_id,
+        )
 
     async def clear_group_monitoring(self, group_chat_id: int) -> None:
         """Clear all monitoring state belonging to one group."""
@@ -145,14 +147,14 @@ class UserbotClient:
             )
 
     def _register_handlers(self) -> None:
-        # Monitor incoming messages to track targets' latest messages
+        # Monitor incoming group messages from mapped targets.
         async def on_incoming(event):
             try:
                 await self._handle_incoming(event)
             except Exception as exc:
                 logger.exception("Error in incoming handler for user %s: %s", self.user_id, exc)
 
-        # Monitor outgoing messages to auto-reply to targets
+        # Monitor outgoing Saved Messages messages for the bridge.
         async def on_outgoing(event):
             try:
                 await self._handle_outgoing(event)
@@ -171,7 +173,7 @@ class UserbotClient:
     async def _handle_incoming(self, event: events.NewMessage.Event) -> None:
         if not self._monitoring_enabled:
             return
-        if not event.message or not event.message.text:
+        if not event.message:
             return
         # Only track messages in groups — never in private chats
         if not event.is_group:
@@ -180,36 +182,35 @@ class UserbotClient:
         if sender is None:
             return
 
-        if not await db.get_setting(self.user_id, "autotag", False):
+        chat_id = int(event.chat_id)
+        mappings = await db.get_target_mappings(
+            self.user_id,
+            group_chat_id=chat_id,
+            target_user_id=int(sender.id),
+        )
+        if not mappings:
             return
-        active_group = await db.get_active_group(self.user_id)
-        if active_group is not None and active_group != event.chat_id:
-            return
 
-        targets = await db.get_targets(self.user_id)
-        target_ids = {t["target_id"] for t in targets}
-
-        if sender.id in target_ids:
-            chat_id = event.chat_id
-            await db.update_target_last_message(
-                self.user_id,
-                sender.id,
-                chat_id,
-                event.message.id,
-            )
-            logger.debug(
-                "Stored group message for target %s (user %s): msg_id=%s chat_id=%s",
-                sender.id, self.user_id, event.message.id, chat_id,
-            )
-
-            # ── SetGroup: forward to Saved Messages if this is the active group ──
-            if active_group and active_group == chat_id:
-                await self._forward_to_saved_messages(
-                    event=event,
-                    target_id=sender.id,
-                    group_chat_id=chat_id,
-                    group_msg_id=event.message.id,
-                )
+        await db.update_target_last_message(
+            self.user_id,
+            int(sender.id),
+            chat_id,
+            event.message.id,
+            message_date=event.message.date,
+        )
+        logger.debug(
+            "Stored mapped group message: user_id=%s target_id=%s chat_id=%s msg_id=%s",
+            self.user_id,
+            sender.id,
+            chat_id,
+            event.message.id,
+        )
+        await self._forward_to_saved_messages(
+            event=event,
+            target_id=int(sender.id),
+            group_chat_id=chat_id,
+            group_msg_id=event.message.id,
+        )
 
     async def _handle_outgoing(self, event: events.NewMessage.Event) -> None:
         if not self._monitoring_enabled:
@@ -218,14 +219,15 @@ class UserbotClient:
             return
 
         # ── Saved Messages bridge ─────────────────────────────────────────────
-        # Mapped replies keep their existing behavior. A fresh Saved Messages
-        # message is handled independently and does not require reply_to.
         if (
             event.is_private
             and self._own_id is not None
             and event.chat_id == self._own_id
-            and await db.get_setting(self.user_id, "autotag", False)
         ):
+            # The forwarded source message itself is an outgoing Saved Messages
+            # event. It must never be echoed back into its source group.
+            if event.message.id in self._bridge_mappings or event.message.fwd_from is not None:
+                return
             if event.message.reply_to is not None:
                 reply_to_saved_id = event.message.reply_to.reply_to_msg_id
                 mapping = self._bridge_mappings.get(reply_to_saved_id)
@@ -239,200 +241,74 @@ class UserbotClient:
                     await self._handle_setgroup_reply(event)
                     return
 
-            if not event.message.text:
-                logger.warning(
-                    "Saved Messages message ignored: only text messages can be "
-                    "sent to the active target group; message_id=%s",
-                    event.message.id,
-                )
-                return
             await self._handle_saved_message_message(event)
             return
-
-        if not event.message.text:
-            return
-
-        # Only trigger autotag when the host sends in a group — never in private chats
-        if not event.is_group:
-            return
-        if self._consume_saved_message_outgoing_marker(event):
-            return
-
-        autotag = await db.get_setting(self.user_id, "autotag", False)
-        if not autotag:
-            return
-        active_group = await db.get_active_group(self.user_id)
-        if active_group is not None and active_group != event.chat_id:
-            return
-
-        # Capture these immediately before any await that could let the message change
-        text = event.message.text
-        original_message_id = event.message.id
-        outgoing_chat_id = event.chat_id
-
-        targets = await db.get_targets(self.user_id)
-
-        # Resolve all targets' latest messages in this group in parallel
-        async def _resolve(target: dict) -> tuple[dict, int] | None:
-            msg_id = await db.get_target_message_in_chat(
-                self.user_id, target["target_id"], outgoing_chat_id
-            )
-            return (target, msg_id) if msg_id else None
-
-        resolved = await asyncio.gather(*(_resolve(t) for t in targets))
-        reply_tasks = [r for r in resolved if r is not None]
-
-        # No targets have spoken in this group — leave the original message alone
-        if not reply_tasks:
-            return
-
-        # Delete the original message as fast as possible so only the reply remains
-        try:
-            await self.client.delete_messages(outgoing_chat_id, [original_message_id])
-        except Exception as exc:
-            logger.warning(
-                "Could not delete original message %s in chat %s: %s",
-                original_message_id, outgoing_chat_id, exc,
-            )
-
-        # Send all replies concurrently
-        await asyncio.gather(
-            *(
-                self._send_with_retry(outgoing_chat_id, text, reply_to=msg_id, target=t)
-                for t, msg_id in reply_tasks
-            ),
-            return_exceptions=True,
-        )
-
-    async def _send_with_retry(
-        self, chat_id: int, text: str, reply_to: int, target: dict
-    ) -> None:
-        for attempt in range(1, FLOOD_RETRY_LIMIT + 1):
-            try:
-                await self.client.send_message(
-                    entity=chat_id,
-                    message=text,
-                    reply_to=reply_to,
-                )
-                logger.debug(
-                    "Autotag reply sent to target %s in chat %s.",
-                    target.get("target_id"), chat_id,
-                )
-                return
-            except FloodWaitError as e:
-                wait = e.seconds + 1
-                logger.warning(
-                    "FloodWait %ds for user %s target %s (attempt %d/%d). Waiting…",
-                    wait, self.user_id, target.get("target_id"), attempt, FLOOD_RETRY_LIMIT,
-                )
-                await asyncio.sleep(wait)
-            except Exception as exc:
-                logger.error(
-                    "Failed to send autotag reply to %s: %s", target.get("target_id"), exc
-                )
-                return
-        logger.error(
-            "Gave up sending autotag reply to %s after %d attempts.",
-            target.get("target_id"), FLOOD_RETRY_LIMIT,
-        )
-
-    def _consume_saved_message_outgoing_marker(
-        self, event: events.NewMessage.Event
-    ) -> bool:
-        """Prevent a generated Saved Messages bridge message from re-triggering AutoTag."""
-        marker = (int(event.chat_id), event.message.text or "")
-        if marker not in self._saved_message_outgoing_markers:
-            return False
-        self._saved_message_outgoing_markers.remove(marker)
-        logger.debug(
-            "Ignored generated Saved Messages bridge message in AutoTag handler: "
-            "chat_id=%s message_id=%s",
-            event.chat_id,
-            event.message.id,
-        )
-        return True
 
     async def _handle_saved_message_message(
         self, event: events.NewMessage.Event
     ) -> None:
         """
-        Send a fresh Saved Messages text to the active group mentioning the
-        target whose message was tracked most recently in that group.
+        Send a fresh Saved Messages text to the group containing the newest
+        message from any permanently mapped target.
         """
-        text = event.message.text or ""
-        active_group = await db.get_active_group(self.user_id)
-        if active_group is None:
+        latest = await db.get_latest_mapped_target_message(self.user_id)
+        if latest is None:
             logger.error(
-                "Saved Messages bridge error: no active group configured; "
+                "Saved Messages bridge error: no mapped target message exists; "
                 "saved_message_id=%s",
                 event.message.id,
             )
             return
 
-        latest = await db.get_latest_target_in_chat(self.user_id, active_group)
-        if latest is None:
-            logger.error(
-                "Saved Messages bridge error: no active target mapping found; "
-                "active_group_id=%s saved_message_id=%s",
-                active_group,
-                event.message.id,
-            )
-            return
-
-        target, latest_target_message_id = latest
-        target_id = int(target["target_id"])
+        mapping, latest_target_message_id = latest
+        group_chat_id = int(mapping["group_chat_id"])
+        target_id = int(mapping["target_user_id"])
 
         logger.info(
             "Saved Messages outgoing message detected: saved_message_id=%s "
-            "active_group_id=%s target_user_id=%s latest_target_message_id=%s",
+            "mapped_group_id=%s target_user_id=%s latest_target_message_id=%s",
             event.message.id,
-            active_group,
+            group_chat_id,
             target_id,
             latest_target_message_id,
         )
 
         try:
-            group_entity = await self.client.get_entity(active_group)
+            group_entity = await self.client.get_entity(group_chat_id)
             logger.info(
-                "Saved Messages target group resolved: active_group_id=%s title=%s",
-                active_group,
-                getattr(group_entity, "title", None) or str(active_group),
+                "Saved Messages target group resolved: group_chat_id=%s title=%s",
+                group_chat_id,
+                getattr(group_entity, "title", None) or str(group_chat_id),
             )
         except Exception as exc:
             logger.error(
                 "Saved Messages bridge error: target group resolution failed; "
-                "active_group_id=%s reason=%s",
-                active_group,
+                "group_chat_id=%s reason=%s",
+                group_chat_id,
                 exc,
             )
             return
 
-        marker = (int(active_group), text)
-        self._saved_message_outgoing_markers.add(marker)
-        try:
-            sent = await self._send_saved_message_with_retry(
-                entity=group_entity,
-                text=text,
-                reply_to=latest_target_message_id,
-                active_group_id=active_group,
-                target_id=target_id,
+        sent = await self._send_saved_message_with_retry(
+            entity=group_entity,
+            message=event.message,
+            reply_to=latest_target_message_id,
+            active_group_id=group_chat_id,
+            target_id=target_id,
+        )
+        if sent:
+            logger.info(
+                "Saved Messages standalone message bridged: group_chat_id=%s "
+                "target_user_id=%s saved_message_id=%s",
+                group_chat_id,
+                target_id,
+                event.message.id,
             )
-            if sent:
-                logger.info(
-                    "Saved Messages outgoing message sent successfully: "
-                    "active_group_id=%s target_user_id=%s "
-                    "saved_message_id=%s",
-                    active_group,
-                    target_id,
-                    event.message.id,
-                )
-        finally:
-            self._saved_message_outgoing_markers.discard(marker)
 
     async def _send_saved_message_with_retry(
         self,
         entity,
-        text: str,
+        message,
         reply_to: int,
         active_group_id: int,
         target_id: int,
@@ -441,7 +317,8 @@ class UserbotClient:
             try:
                 await self.client.send_message(
                     entity=entity,
-                    message=text,
+                    message=message.text or None,
+                    file=message.media,
                     reply_to=reply_to,
                 )
                 return True
@@ -476,7 +353,7 @@ class UserbotClient:
         )
         return False
 
-    # ── SetGroup helpers ───────────────────────────────────────────────────────
+    # ── Saved Messages bridge helpers ──────────────────────────────────────────
 
     async def _forward_to_saved_messages(
         self,
@@ -501,10 +378,10 @@ class UserbotClient:
             fwd_msg = forwarded[0] if isinstance(forwarded, list) else forwarded
             saved_msg_id = fwd_msg.id
 
-            if (
-                not self._monitoring_enabled
-                or not await db.get_setting(self.user_id, "autotag", False)
-                or await db.get_active_group(self.user_id) != group_chat_id
+            if not self._monitoring_enabled or not await db.get_target_mapping(
+                self.user_id,
+                group_chat_id,
+                target_id,
             ):
                 await self.client.delete_messages("me", [saved_msg_id])
                 return
@@ -549,7 +426,6 @@ class UserbotClient:
         then sends the reply text into the active group as a reply to that message.
         """
         reply_to_saved_id = event.message.reply_to.reply_to_msg_id
-        text = event.message.text or ""
         logger.info(
             "Saved Messages reply detected: user_id=%s reply_message_id=%s "
             "reply_to_saved_message_id=%s",
@@ -583,19 +459,6 @@ class UserbotClient:
         group_msg_id: int = mapping["original_message_id"]
         target_id: int = mapping["target_user_id"]
 
-        # Confirm the active group still matches (guard against stale mappings)
-        active_group = await db.get_active_group(self.user_id)
-        if active_group != group_chat_id:
-            logger.error(
-                "Saved Messages bridge error: active group mismatch; "
-                "active_group_id=%s mapping_group_id=%s "
-                "forwarded_saved_message_id=%s",
-                active_group,
-                group_chat_id,
-                reply_to_saved_id,
-            )
-            return
-
         try:
             group_entity = await self.client.get_entity(group_chat_id)
             logger.info(
@@ -617,7 +480,7 @@ class UserbotClient:
         try:
             sent = await self._send_bridge_reply(
                 entity=group_entity,
-                text=text,
+                message=event.message,
                 reply_to=group_msg_id,
                 forwarded_saved_message_id=reply_to_saved_id,
             )
@@ -652,7 +515,7 @@ class UserbotClient:
     async def _send_bridge_reply(
         self,
         entity,
-        text: str,
+        message,
         reply_to: int,
         forwarded_saved_message_id: int,
     ) -> bool:
@@ -661,7 +524,8 @@ class UserbotClient:
             try:
                 await self.client.send_message(
                     entity=entity,
-                    message=text,
+                    message=message.text or None,
+                    file=message.media,
                     reply_to=reply_to,
                 )
                 return True
