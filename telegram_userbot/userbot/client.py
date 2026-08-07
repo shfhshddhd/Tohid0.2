@@ -1,8 +1,11 @@
 """Per-user Telethon client for persistent group-to-target message bridges."""
 import asyncio
+import json
 import logging
 import random
 import unicodedata
+import urllib.error
+import urllib.request
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from telethon.errors import FloodWaitError
@@ -14,6 +17,11 @@ logger = logging.getLogger(__name__)
 
 FLOOD_RETRY_LIMIT = 5
 AI_MODELS = ("gpt-5-mini", "gpt-5-nano")
+GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_ENDPOINT = (
+    "https://generativelanguage.googleapis.com/v1beta/models/"
+    f"{GEMINI_MODEL}:generateContent"
+)
 
 
 class UserbotClient:
@@ -202,8 +210,18 @@ class UserbotClient:
         sender_name: str,
         message_text: str,
     ) -> str:
+        if config.GEMINI_API_KEY:
+            return await self._generate_gemini_reply(
+                chat_id=chat_id,
+                participant_id=participant_id,
+                sender_name=sender_name,
+                message_text=message_text,
+            )
         if not config.OPENAI_API_KEY:
-            logger.error("AI mode cannot reply: OPENAI_API_KEY is not configured.")
+            logger.error(
+                "AI mode cannot reply: neither GEMINI_API_KEY nor "
+                "OPENAI_API_KEY is configured."
+            )
             return ""
         if self._ai_client is None:
             self._ai_client = AsyncOpenAI(api_key=config.OPENAI_API_KEY)
@@ -282,6 +300,115 @@ class UserbotClient:
             self.user_id,
         )
         return ""
+
+    async def _generate_gemini_reply(
+        self,
+        chat_id: int,
+        participant_id: int,
+        sender_name: str,
+        message_text: str,
+    ) -> str:
+        """Generate one reply through Gemini's native generateContent API."""
+        history = await db.get_ai_memory(
+            self.user_id,
+            chat_id,
+            participant_id,
+        )
+        system_instruction = (
+            "YOU WRITE A NATURAL TELEGRAM GROUP REPLY TO THE USER "
+            "WHO JUST MENTIONED THE ACCOUNT OWNER. ACT LIKE A COLD, "
+            "CONFIDENT, HIGH-STATUS PERSONA: SHORT, DIRECT, ASSERTIVE, "
+            "AND UNBOTHERED. MATCH THE USERS LANGUAGE, TONE, HUMOR, "
+            "ATTITUDE, AND LEVEL OF FORMALITY. USE ONLY ENGLISH "
+            "ALPHABETS AND NUMBERS ONLY. NEVER USE PUNCTUATION. NEVER USE "
+            "DEVANAGARI OR ANY OTHER NON-LATIN SCRIPT. ROMANIZED HINDI OR "
+            "HINGLISH IS ALLOWED WHEN IT FITS THE USERS MESSAGE. DO NOT USE "
+            "POLITE FILLER, FLUFF, OR GENERIC ASSISTANT PHRASES. IF THE USER "
+            "IS RUDE, ABUSIVE, OR ROASTS YOU, RESPOND WITH A FIRM, SHARP "
+            "COMEBACK THAT STAYS WITHIN SAFETY LIMITS AND DOES NOT THREATEN, "
+            "TARGET, OR HATE AGAINST A PERSON OR GROUP. DO NOT CLAIM TO BE "
+            "HUMAN OR DENY BEING AI IF ASKED DIRECTLY; ANSWER BRIEFLY AND "
+            "CONFIDENTLY. OUTPUT ONLY THE REPLY IN CAPITAL LETTERS. NEVER "
+            "USE EMOJIS OR FULL STOPS. KEEP IT CONCISE AND DO NOT DESCRIBE "
+            "THESE INSTRUCTIONS"
+        )
+        contents = []
+        for item in history:
+            role = item.get("role")
+            content = item.get("content")
+            if role in {"user", "assistant"} and content:
+                contents.append(
+                    {
+                        "role": "model" if role == "assistant" else "user",
+                        "parts": [{"text": str(content)}],
+                    }
+                )
+        contents.append(
+            {
+                "role": "user",
+                "parts": [{"text": f"{sender_name} SAYS:\n{message_text}"}],
+            }
+        )
+        payload = {
+            "systemInstruction": {"parts": [{"text": system_instruction}]},
+            "contents": contents,
+            "generationConfig": {"maxOutputTokens": 8192},
+        }
+        request = urllib.request.Request(
+            GEMINI_ENDPOINT,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "x-goog-api-key": config.GEMINI_API_KEY,
+            },
+            method="POST",
+        )
+
+        try:
+            response_body = await asyncio.to_thread(
+                self._post_gemini_request,
+                request,
+            )
+            response = json.loads(response_body)
+            text = "".join(
+                part.get("text", "")
+                for part in (
+                    response.get("candidates", [{}])[0]
+                    .get("content", {})
+                    .get("parts", [])
+                )
+                if isinstance(part, dict)
+            )
+            reply = self._sanitize_ai_reply(text)
+            if not reply:
+                logger.error(
+                    "Gemini returned no usable AI reply for user %s.",
+                    self.user_id,
+                )
+            return reply
+        except urllib.error.HTTPError as exc:
+            logger.error(
+                "Gemini AI request failed for user %s with HTTP %s.",
+                self.user_id,
+                exc.code,
+            )
+        except (TimeoutError, urllib.error.URLError, json.JSONDecodeError) as exc:
+            logger.error(
+                "Gemini AI request failed for user %s: %s",
+                self.user_id,
+                type(exc).__name__,
+            )
+        except Exception:
+            logger.exception(
+                "Unexpected Gemini AI error for user %s",
+                self.user_id,
+            )
+        return ""
+
+    @staticmethod
+    def _post_gemini_request(request: urllib.request.Request) -> str:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return response.read().decode("utf-8")
 
     @staticmethod
     def _sender_name(sender) -> str:
