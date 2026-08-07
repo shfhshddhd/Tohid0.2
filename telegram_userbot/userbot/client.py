@@ -214,7 +214,8 @@ class UserbotClient:
                     "CONFIDENT, HIGH-STATUS PERSONA: SHORT, DIRECT, ASSERTIVE, "
                     "AND UNBOTHERED. MATCH THE USER'S LANGUAGE, TONE, HUMOR, "
                     "ATTITUDE, AND LEVEL OF FORMALITY. USE ONLY ENGLISH "
-                    "ALPHABETS, ASCII PUNCTUATION, AND NUMBERS. NEVER USE "
+                    "ALPHABETS AND NUMBERS ONLY. NEVER USE PUNCTUATION. NEVER "
+                    "USE "
                     "DEVANAGARI OR ANY OTHER NON-LATIN SCRIPT. ROMANIZED "
                     "HINDI OR HINGLISH IS ALLOWED WHEN IT FITS THE USER'S "
                     "MESSAGE. DO NOT USE POLITE FILLER, FLUFF, OR GENERIC "
@@ -269,7 +270,7 @@ class UserbotClient:
             char
             for char in cleaned
             if ord(char) < 128
-            and unicodedata.category(char) not in {"So", "Sk"}
+            and unicodedata.category(char)[0] not in {"P", "S"}
         )
         return " ".join(cleaned.split()).strip()
 

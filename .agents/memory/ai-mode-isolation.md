@@ -9,7 +9,7 @@ AI mention replies must remain independently controlled from the Saved Messages 
 
 **How to apply:** Keep AI listener lifecycle, persistence, and cleanup separate from bridge monitoring handlers; scope memory to the hosted owner, group, and participant.
 
-The AI persona may be cold, confident, concise, Roman-alphabet-only, uppercase, and free of emojis/full stops, but it must not impersonate a human or escalate into threats, hate, or targeted abuse.
+The AI persona may be cold, confident, concise, Roman-alphabet-only, uppercase, and free of all punctuation/emojis, but it must not impersonate a human or escalate into threats, hate, or targeted abuse.
 
 **Why:** Persona customization should not override transparency and safety boundaries.
 
