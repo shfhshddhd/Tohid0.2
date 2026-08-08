@@ -15,7 +15,7 @@ import database.mongo as db
 logger = logging.getLogger(__name__)
 
 FLOOD_RETRY_LIMIT = 5
-GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_MODEL = "gemini-flash-latest"
 GEMINI_ENDPOINT = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
     f"{GEMINI_MODEL}:generateContent"
