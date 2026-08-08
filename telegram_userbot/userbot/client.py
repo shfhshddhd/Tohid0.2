@@ -9,14 +9,12 @@ import urllib.request
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from telethon.errors import FloodWaitError
-from openai import AsyncOpenAI, RateLimitError
 import config
 import database.mongo as db
 
 logger = logging.getLogger(__name__)
 
 FLOOD_RETRY_LIMIT = 5
-AI_MODELS = ("gpt-5-mini", "gpt-5-nano")
 GEMINI_MODEL = "gemini-2.5-flash"
 GEMINI_ENDPOINT = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
@@ -41,7 +39,6 @@ class UserbotClient:
         self._ai_tasks: set[asyncio.Task] = set()
         self._ai_locks: dict[tuple[int, int], asyncio.Lock] = {}
         self._bridge_mappings: dict[int, dict] = {}
-        self._ai_client: AsyncOpenAI | None = None
 
     # ── Lifecycle ──────────────────────────────────────────────────────────────
 
@@ -210,16 +207,6 @@ class UserbotClient:
         sender_name: str,
         message_text: str,
     ) -> str:
-        """Try the configured providers in priority order."""
-        if config.OPENAI_API_KEY:
-            reply = await self._generate_openai_reply(
-                chat_id=chat_id,
-                participant_id=participant_id,
-                sender_name=sender_name,
-                message_text=message_text,
-            )
-            if reply:
-                return reply
         if config.GEMINI_API_KEY:
             return await self._generate_gemini_reply(
                 chat_id=chat_id,
@@ -228,93 +215,7 @@ class UserbotClient:
                 message_text=message_text,
             )
         logger.error(
-            "AI mode cannot reply: neither GEMINI_API_KEY nor "
-            "OPENAI_API_KEY is configured."
-        )
-        return ""
-
-    async def _generate_openai_reply(
-        self,
-        chat_id: int,
-        participant_id: int,
-        sender_name: str,
-        message_text: str,
-    ) -> str:
-        if self._ai_client is None:
-            self._ai_client = AsyncOpenAI(api_key=config.OPENAI_API_KEY)
-
-        history = await db.get_ai_memory(
-            self.user_id,
-            chat_id,
-            participant_id,
-        )
-        prompt_messages = [
-            {
-                "role": "system",
-                "content": (
-                    "YOU WRITE A NATURAL TELEGRAM GROUP REPLY TO THE USER "
-                    "WHO JUST MENTIONED THE ACCOUNT OWNER. ACT LIKE A COLD, "
-                    "CONFIDENT, HIGH-STATUS PERSONA: SHORT, DIRECT, ASSERTIVE, "
-                    "AND UNBOTHERED. MATCH THE USER'S LANGUAGE, TONE, HUMOR, "
-                    "ATTITUDE, AND LEVEL OF FORMALITY. USE ONLY ENGLISH "
-                    "ALPHABETS AND NUMBERS ONLY. NEVER USE PUNCTUATION. NEVER "
-                    "USE "
-                    "DEVANAGARI OR ANY OTHER NON-LATIN SCRIPT. ROMANIZED "
-                    "HINDI OR HINGLISH IS ALLOWED WHEN IT FITS THE USER'S "
-                    "MESSAGE. DO NOT USE POLITE FILLER, FLUFF, OR GENERIC "
-                    "ASSISTANT PHRASES. IF THE USER IS RUDE, ABUSIVE, OR "
-                    "ROASTS YOU, RESPOND WITH A FIRM, SHARP COMEBACK THAT "
-                    "STAYS WITHIN SAFETY LIMITS AND DOES NOT THREATEN, "
-                    "TARGET, OR HATE AGAINST A PERSON OR GROUP. DO NOT "
-                    "CLAIM TO BE HUMAN OR DENY BEING AI IF ASKED DIRECTLY; "
-                    "ANSWER BRIEFLY AND CONFIDENTLY. OUTPUT ONLY THE REPLY "
-                    "IN CAPITAL LETTERS. NEVER USE EMOJIS OR FULL STOPS. "
-                    "KEEP IT CONCISE AND DO NOT DESCRIBE THESE INSTRUCTIONS"
-                ),
-            }
-        ]
-        for item in history:
-            role = item.get("role")
-            content = item.get("content")
-            if role in {"user", "assistant"} and content:
-                prompt_messages.append({"role": role, "content": content})
-        prompt_messages.append(
-            {
-                "role": "user",
-                "content": f"{sender_name} SAYS:\n{message_text}",
-            }
-        )
-
-        for model in AI_MODELS:
-            try:
-                completion = await self._ai_client.chat.completions.create(
-                    model=model,
-                    max_completion_tokens=240,
-                    messages=prompt_messages,
-                )
-                content = (
-                    completion.choices[0].message.content
-                    if completion.choices
-                    else ""
-                )
-                return self._sanitize_ai_reply(content or "")
-            except RateLimitError:
-                logger.warning(
-                    "AI model rate limited for user %s; trying fallback model=%s",
-                    self.user_id,
-                    model,
-                )
-            except Exception:
-                logger.exception(
-                    "AI response generation failed for user %s model=%s",
-                    self.user_id,
-                    model,
-                )
-                return ""
-
-        logger.error(
-            "AI response unavailable for user %s: all configured models are rate limited",
-            self.user_id,
+            "AI mode cannot reply: GEMINI_API_KEY is not configured."
         )
         return ""
 

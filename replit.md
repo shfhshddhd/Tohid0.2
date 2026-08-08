@@ -10,7 +10,7 @@ A Telegram bot that lets users host their own Telegram account, track selected t
 - `pnpm run build` — typecheck + build all packages
 - `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
 - `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
-- Required secrets: `BOT_TOKEN`, `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `MONGO_URI`
+- Required secrets: `BOT_TOKEN`, `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `MONGO_URI`, `GEMINI_API_KEY`
 
 ## Stack
 

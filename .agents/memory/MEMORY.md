@@ -1,3 +1,3 @@
 - [AI mode isolation](ai-mode-isolation.md) — AI mention replies use separate state and bounded, scoped conversation memory from the Saved Messages bridge.
 - [AI credential verification](ai-credential-verification.md) — AI mode can load while the provider key is rejected; verify with a real mention after restart.
-- [AI provider fallback](ai-provider-fallback.md) — Telegram AI replies use Gemini when its secret is available, with OpenAI retained as fallback.
+- [AI provider selection](ai-provider-selection.md) — Telegram AI replies use only the configured Gemini provider.
